@@ -63,6 +63,7 @@ class aggregator:
         self.nPV = self.ngen_dict['PV']
         self.nESS = self.ngen_dict['ESS']
         self.nDG= self.ngen_dict['DG']
+        self.nRES = self.nWT + self.nPV
         self.nTotalGen = self.nPV + self.nWT + self.nESS + self.nDG
         
         count = 1
@@ -74,6 +75,7 @@ class aggregator:
         
         for i in range(self.nPV):
             self.pv_list.append(PV(self.name, self.code, count))
+            self.pv_list[i].set_pv_profile(self.case_dict, self.model_dict)
             count = count + 1
             
         for i in range(self.nESS):
@@ -81,7 +83,8 @@ class aggregator:
             count = count + 1
         for i in range(self.nDG):
             self.dg_list.append(DG(self.name, self.code, count, self.dg_dict_list[i]))
-    
+            count = count + 1
+            
     def set_wt_power(self, max_power_list):
         
         for i in range(len(self.wt_list)):
@@ -174,15 +177,14 @@ class WT:
         self.min_power = 0
         self.max_power = 0
         
-        
-        
-        
+
     def set_power(self, max_power):
         # Unit [kW]
         self.max_power = max_power
-        
-        self.profile_mu = self.profile_mu * max_power
-        self.profile_xi = self.profile_xi * max_power
+        divide_factor = self.case_dict['divide_factor']
+        self.profile_mu = self.profile_mu * max_power 
+        self.profile_xi = self.profile_xi * max_power / divide_factor
+        self.oos_profile_xi = self.oos_profile_xi * max_power / divide_factor 
         
     def get_res_data(self):
         self.res_data = [
@@ -210,7 +212,7 @@ class WT:
         N = self.case_dict['N']
         OOS_sim = self.case_dict['OOS_sim']
         
-        wt_profile_dict = pd.read_excel(f"{path}/src/Data_Generation/발전실적(~2022.10.31).xlsx", 0, header=0)
+        wt_profile_dict = pd.read_excel(f"{path}/src/Data_Generation/발전실적(~2022.10.31)_modified.xlsx", 0, header=0)
         wt_data = wt_profile_dict.iloc[:,1:1 + nTimeslot].values
         wt_profile = wt_data / np.max(wt_data)
         wt_profile = wt_profile.astype(float)
@@ -223,8 +225,8 @@ class WT:
         # Cutting off very extreme values
 
         cut_off_eps = 1e-2
-        wff[wff<cut_off_eps] = cut_off_eps;
-        wff[wff>(1-cut_off_eps)] = 1 - cut_off_eps;
+        wff[wff<cut_off_eps] = cut_off_eps
+        wff[wff>(1-cut_off_eps)] = 1 - cut_off_eps
             
         '''
         # Logit-normal transformation (Eq. (1) in ref. [31])
@@ -267,13 +269,15 @@ class WT:
         '''
         
         #self.profile = WPf[0:N,:].transpose()
-        self.profile = wff[-100:,:].transpose()
+        self.profile = wff[-N:,:].transpose()
+        self.oos_profile = wff[-N-OOS_max:-N,:].transpose()
         self.profile_mu = self.profile.mean(axis = 1)
         self.profile_mu = self.profile_mu.reshape(len(self.profile_mu),1)
         self.profile_xi = self.profile - np.tile(self.profile_mu,(1, self.profile.shape[1]))
+        self.oos_profile_xi = self.oos_profile - np.tile(self.profile_mu, (1, self.oos_profile.shape[1]))
         
 class PV:
-    def __init__(self, name,code, count, pv_profile):
+    def __init__(self, name,code, count):
         self.name = f'PV{count}_{name}'
         self.type = 'PV'
         self.cvpp_name = name
@@ -281,11 +285,14 @@ class PV:
         self.busNumber = count
         self.min_power = 0
         self.max_power = 0
-        self.profile = pv_profile
         
     def set_power(self, max_power):
         # Unit [kW]
         self.max_power = max_power
+        divide_factor = self.case_dict['divide_factor']
+        self.profile_mu = self.profile_mu * max_power 
+        self.profile_xi = self.profile_xi * max_power / divide_factor
+        self.oos_profile_xi = self.oos_profile_xi * max_power / divide_factor
         
     def get_res_data(self):
         self.res_data = [
@@ -296,6 +303,84 @@ class PV:
             self.max_power
         ]  
         return self.res_data 
+    
+    def set_pv_profile(self, case_dict, model_dict):
+        
+        self.model_dict = model_dict
+        self.case_dict = case_dict
+        
+        path = model_dict['path']
+        nTimeslot = model_dict['nTimeslot']
+        
+        n_total_scen = self.case_dict['n_total_scen']
+        N_max = self.case_dict['N_max']
+        OOS_max = self.case_dict['OOS_max']
+        IR_max = self.case_dict['IR_max']
+        
+        N = self.case_dict['N']
+        OOS_sim = self.case_dict['OOS_sim']
+        
+        pv_profile_dict = pd.read_excel(f"{path}/src/Data_Generation/발전실적(~2022.10.31)_modified.xlsx", 1, header=0)
+        pv_data = pv_profile_dict.iloc[:,1:1 + nTimeslot].values
+        pv_profile = pv_data / np.max(pv_data)
+        pv_profile = pv_profile.astype(float)
+        wff = np.maximum(pv_profile, 1e-6)
+        wff = wff
+        
+        # wt_profile_dict = io.loadmat(f'{path}/src/Data_Generation/AV_AEMO')
+        # wff = wt_profile_dict['AV_AEMO2'][:, :nTimeslot]
+        
+        # Cutting off very extreme values
+
+        cut_off_eps = 1e-2
+        wff[wff<cut_off_eps] = cut_off_eps
+        wff[wff>(1-cut_off_eps)] = 1 - cut_off_eps
+            
+        '''
+        # Logit-normal transformation (Eq. (1) in ref. [31])
+        yy = np.log(wff/(1-wff))
+
+        # Calculation of mean and variance, note that we increase the mean to have
+        # higher wind penetration in our test-case
+        
+        mu = yy.mean(axis=0)
+        # mu = yy.mean(axis=0) + 1.5 # Increase 1.5 for higher wind penetration
+        cov_m = np.cov(yy, rowvar = False)
+        std_yy = yy.std(axis=0).reshape(1, yy.shape[1])
+        std_yy_T = std_yy.T
+        sigma_m = cov_m / (std_yy_T @ std_yy)
+
+        # Inverse of logit-normal transformation (Eq. (2) in ref. [31]) 
+        R = np.linalg.cholesky(sigma_m).T
+
+        wt_rand_pattern = np.random.randn(n_total_scen, nTimeslot)
+
+        y = np.tile(mu, (n_total_scen,1)) + wt_rand_pattern @ R
+        Wind = (1 + np.exp(-y))**-1
+
+        # Checking correlation, mean and true mean of data
+        corr_check_coeff = np.corrcoef(Wind, rowvar = False)
+        mu_Wind = Wind.mean(axis=0)
+        true_mean_Wind = (1+ np.exp(-mu))**-1
+
+        # Reshaping the data structure
+
+        nWind = Wind.T
+        nWind = nWind.reshape(nTimeslot, N_max + OOS_max, IR_max)
+        
+        # peak N and N' samples
+        j = 0
+        WPf_max = nWind[:,0:N_max,j].transpose()
+        WPr_max = nWind[:,N_max:N_max + OOS_max, j].transpose()
+        WPf = WPf_max[0:N,:]
+        WPr = WPr_max[0:OOS_sim,:]
+        '''
+        self.profile = wff[-N:,:].transpose()
+        self.oos_profile = wff[-N-OOS_max:-N,:].transpose()
+        self.profile_mu = self.profile.mean(axis = 1)
+        self.profile_mu = self.profile_mu.reshape(len(self.profile_mu),1)
+        self.profile_xi = self.profile - np.tile(self.profile_mu,(1, self.profile.shape[1]))
+        self.oos_profile_xi = self.oos_profile - np.tile(self.profile_mu, (1, self.oos_profile.shape[1]))
         
 class ESS:
     def __init__(self, name,code, count, ess):

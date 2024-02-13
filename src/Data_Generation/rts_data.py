@@ -13,28 +13,30 @@ def generate_gen_dict(num, dg_max, model_dict):
     
     gen_dict = {}
     if num == 0:
+        a = 94.5487
         gen_dict = {'min_power': dg_max * 0.1,
                'max_power': dg_max ,
-               'ramp_up_limit': dg_max * 0.4,
-               'ramp_down_limit': dg_max * 0.4 ,
-               '상수': 94.5487,
-               '1차 계수': 2.1,
+               'ramp_up_limit': dg_max * 0.3,
+               'ramp_down_limit': dg_max * 0.3 ,
+               '상수': a,
+               '1차 계수': 2.21,
                '2차 계수': 0.00033,
-               'start_up_cost': 94.5487,
-               'shut_down_cost': 94.5487,
+               'start_up_cost': a,
+               'shut_down_cost': a,
                'fuel_cost': 55.117,
                'N_PIECE': model_dict['N_PIECE'],
                }    
     elif num == 1:
+        a = 95.343
         gen_dict = {'min_power': dg_max * 0.1,
                'max_power': dg_max ,
                'ramp_up_limit': dg_max * 0.4,
                'ramp_down_limit': dg_max * 0.4 ,
-               '상수': 95.343,
-               '1차 계수': 2.05,
+               '상수': a,
+               '1차 계수': 2.15,
                '2차 계수': 0.00037,
-               'start_up_cost': 95.343,
-               'shut_down_cost': 95.343,
+               'start_up_cost': a,
+               'shut_down_cost': a,
                'fuel_cost': 55.128,
                'N_PIECE': model_dict['N_PIECE'],
                }        
