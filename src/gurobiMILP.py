@@ -22,10 +22,9 @@ class gurobi_MILP:
         self.wt_list = self.vpp.wt_list
         self.pv_list = self.vpp.pv_list
         self.ess_list = self.vpp.ess_list
-        self.dg_list = self.vpp.dg_list
-        
+        self.dg_list = self.vpp.dg_list  
         try:
-            self.res_list = self.vpp.wt_list + self.vpp.pv_list
+            self.res_list = self.vpp.res_list
         except: 
             print("Fail to generate the res_list")
         
@@ -1186,58 +1185,57 @@ class gurobi_MILP:
         self.base_obj = base_obj
         self.beta = beta        
     
-    def oos_test(self):
-        
-        self.nOOS = self.case_dict['OOS_sim']
-        Pbid = self.P_dict['bid']
-        Rdg_i = self.P_dict['dg_ru']
-        Rdg = np.zeros(self.nTimeslot)
-        
-        Ress_dis_i = self.P_dict['RU_essdis']
-        Ress_chg_i = self.P_dict['RU_esschg']
-        
-        Ress = np.zeros(self.nTimeslot)
-                
-        if self.is_dg_reserve:
-            for i in range(self.nDG):
-                Rdg += Rdg_i[i]
-        
-        if self.is_ess_reserve:
-            for i in range(self.nESS):
-                Ress += Ress_dis_i [i] + Ress_chg_i[i]
-                
-        profile_xi = np.zeros((self.nTimeslot, self.nOOS))
-        for i in range(self.nRES):
-            profile_xi += self.res_list[i].oos_profile_xi[:,:self.nOOS]
+def oos_test(opt_bid, vpp, OOS_sim):
+    
+    Pbid = opt_bid.P_dict['bid']
+    Rdg_i = opt_bid.P_dict['dg_ru']
+    Rdg = np.zeros(opt_bid.nTimeslot)
+    
+    Ress_dis_i = opt_bid.P_dict['RU_essdis']
+    Ress_chg_i = opt_bid.P_dict['RU_esschg']
+    
+    Ress = np.zeros(opt_bid.nTimeslot)
             
-        # res_min_values = np.zeros(self.nTimeslot)
-        # res_max_values = np.zeros(self.nTimeslot)   
-        # for t in range(self.nTimeslot):
-        #     res_min_values[t] = np.min(profile_xi[t,:])
-        #     res_max_values[t] = np.max(profile_xi[t,:])
-
-        lhs_array = np.zeros((self.nTimeslot, self.nOOS))
-        rhs_array = np.zeros(self.nTimeslot)
-        check_array = np.zeros((self.nTimeslot, self.nOOS))
-        count = 0
-        
-        for t in range(self.nTimeslot):
-            rhs_array[t] = 0.1*Pbid[t]
-            if self.is_dg_reserve:
-                rhs_array[t] += Rdg[t] #self.test_const # + Pbid[t]*0.1
-            if self.is_ess_reserve:
-                rhs_array[t] += Ress[t] #self.test_const # + Pbid[t]*0.1
-
-            for n in range(self.nScen):
-                lhs_array[t,n] = - profile_xi[t,n]
+    if opt_bid.is_dg_reserve:
+        for i in range(opt_bid.nDG):
+            Rdg += Rdg_i[i]
+    
+    if opt_bid.is_ess_reserve:
+        for i in range(opt_bid.nESS):
+            Ress += Ress_dis_i [i] + Ress_chg_i[i]
             
-                if lhs_array[t,n] <= rhs_array[t] + 0.01:
-                    check_array[t,n] = 1
-                    count = count + 1
-                else:
-                    check_array[t,n] = 0
-         
-        ratio = count / (self.nTimeslot * self.nScen) 
-        return lhs_array, rhs_array, check_array, ratio        
+    profile_xi = np.zeros((opt_bid.nTimeslot, OOS_sim))
+    for i in range(opt_bid.nRES):
+        profile_xi += vpp.res_list[i].oos_max_profile_xi[:,:OOS_sim]
+        
+    # res_min_values = np.zeros(opt_bid.nTimeslot)
+    # res_max_values = np.zeros(opt_bid.nTimeslot)   
+    # for t in range(opt_bid.nTimeslot):
+    #     res_min_values[t] = np.min(profile_xi[t,:])
+    #     res_max_values[t] = np.max(profile_xi[t,:])
+
+    lhs_array = np.zeros((opt_bid.nTimeslot, OOS_sim))
+    rhs_array = np.zeros(opt_bid.nTimeslot)
+    check_array = np.zeros((opt_bid.nTimeslot, OOS_sim))
+    count = 0
+    
+    for t in range(opt_bid.nTimeslot):
+        rhs_array[t] = 0.1*Pbid[t]
+        if opt_bid.is_dg_reserve:
+            rhs_array[t] += Rdg[t] #opt_bid.test_const # + Pbid[t]*0.1
+        if opt_bid.is_ess_reserve:
+            rhs_array[t] += Ress[t] #opt_bid.test_const # + Pbid[t]*0.1
+
+        for n in range(OOS_sim):
+            lhs_array[t,n] = - profile_xi[t,n]
+        
+            if lhs_array[t,n] <= rhs_array[t] + 0.01:
+                check_array[t,n] = 1
+                count = count + 1
+            else:
+                check_array[t,n] = 0
+     
+    ratio = count / (opt_bid.nTimeslot * OOS_sim) 
+    return lhs_array, rhs_array, check_array, ratio        
         
 

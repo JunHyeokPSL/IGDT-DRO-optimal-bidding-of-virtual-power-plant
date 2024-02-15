@@ -36,8 +36,10 @@ class aggregator:
         
         self.dg_dict_list = model_dict['dg_dict_list']
         
-            
         self.case_dict = case_dict
+        
+        self.divide_factor = self.case_dict['divide_factor']
+
             
             
         self.initialize_res()
@@ -85,6 +87,8 @@ class aggregator:
             self.dg_list.append(DG(self.name, self.code, count, self.dg_dict_list[i]))
             count = count + 1
             
+        self.res_list = self.wt_list + self.pv_list
+            
     def set_wt_power(self, max_power_list):
         
         for i in range(len(self.wt_list)):
@@ -125,18 +129,18 @@ class aggregator:
         self.data_list = []
         self.total_max_power = np.zeros(self.nTimeslot) 
         self.total_min_power = np.zeros(self.nTimeslot)
-        self.res_list = [self.wt_list, self.pv_list, self.ess_list, self.dg_list]
-        for i in range(len(self.res_list)):
-            for j in range(len(self.res_list[i])):
-                self.data_list.append(self.res_list[i][j].get_res_data())
+        self.gen_list = [self.wt_list, self.pv_list, self.ess_list, self.dg_list]
+        for i in range(len(self.gen_list)):
+            for j in range(len(self.gen_list[i])):
+                self.data_list.append(self.gen_list[i][j].get_res_data())
         
         try:
             uncertainty_list = [self.wt_uncert, self.pv_uncert, np.zeros(self.nTimeslot)]
-            for i in range(len(self.res_list)):
-                for j in range(len(self.res_list[i])):
+            for i in range(len(self.gen_list)):
+                for j in range(len(self.gen_list[i])):
                     for step in range(self.nTimeslot):
-                        self.total_max_power[step] += self.res_list[i][j].max_power * (1+uncertainty_list[i][step])
-                        self.total_min_power[step] += self.res_list[i][j].min_power * (1-uncertainty_list[i][step])
+                        self.total_max_power[step] += self.gen_list[i][j].max_power * (1+uncertainty_list[i][step])
+                        self.total_min_power[step] += self.gen_list[i][j].min_power * (1-uncertainty_list[i][step])
                     
         except Exception as e:
             print("Error")
@@ -144,11 +148,11 @@ class aggregator:
             
             print("Aggregator set_res_table method")
             print("Uncertainty does not exist")
-            for i in range(len(self.res_list)):
-                for j in range(len(self.res_list[i])):
+            for i in range(len(self.gen_list)):
+                for j in range(len(self.gen_list[i])):
                     for step in range(self.nTimeslot):
-                        self.total_max_power[step] += self.res_list[i][j].max_power 
-                        self.total_min_power[step] += self.res_list[i][j].min_power           
+                        self.total_max_power[step] += self.gen_list[i][j].max_power 
+                        self.total_min_power[step] += self.gen_list[i][j].min_power           
         try:
             if self.ess_list:
                 self.res_table = pd.DataFrame(self.data_list,columns=['name', 'type', 'number', 'min_power', 'max_power',
@@ -166,6 +170,10 @@ class aggregator:
             self.set_res_table()
             return self.res_table
             
+    def set_profile(self,N,count): 
+        for i in range(self.nRES):
+            self.res_list[i].set_profile(N,count)
+            
     
 class WT:
     def __init__(self, name,code, count):
@@ -181,11 +189,10 @@ class WT:
     def set_power(self, max_power):
         # Unit [kW]
         self.max_power = max_power
-        divide_factor = self.case_dict['divide_factor']
-        self.profile_mu = self.profile_mu * max_power 
-        self.profile_xi = self.profile_xi * max_power / divide_factor
-        self.oos_profile_xi = self.oos_profile_xi * max_power / divide_factor 
-        
+        self.nWind = self.nWind * max_power
+
+        self.WPf_max = self.WPf_max * max_power
+        self.WPr_max = self.WPr_max * max_power
     def get_res_data(self):
         self.res_data = [
             self.name,
@@ -202,25 +209,24 @@ class WT:
         self.case_dict = case_dict
         
         path = model_dict['path']
-        nTimeslot = model_dict['nTimeslot']
+        self.nTimeslot = model_dict['nTimeslot']
+        
+        self.divide_factor = self.case_dict['divide_factor']
         
         n_total_scen = self.case_dict['n_total_scen']
         N_max = self.case_dict['N_max']
         OOS_max = self.case_dict['OOS_max']
         IR_max = self.case_dict['IR_max']
         
-        N = self.case_dict['N']
-        OOS_sim = self.case_dict['OOS_sim']
-        
-        wt_profile_dict = pd.read_excel(f"{path}/src/Data_Generation/발전실적(~2022.10.31)_modified.xlsx", 0, header=0)
-        wt_data = wt_profile_dict.iloc[:,1:1 + nTimeslot].values
-        wt_profile = wt_data / np.max(wt_data)
-        wt_profile = wt_profile.astype(float)
-        wff = np.maximum(wt_profile, 1e-6)
+        pv_profile_dict = pd.read_excel(f"{path}/src/Data_Generation/발전실적(~2022.10.31)_modified.xlsx", 1, header=0)
+        pv_data = pv_profile_dict.iloc[:,1:1 + self.nTimeslot].values
+        pv_profile = pv_data / np.max(pv_data)
+        pv_profile = pv_profile.astype(float)
+        wff = np.maximum(pv_profile, 1e-6)
         wff = wff
         
         # wt_profile_dict = io.loadmat(f'{path}/src/Data_Generation/AV_AEMO')
-        # wff = wt_profile_dict['AV_AEMO2'][:, :nTimeslot]
+        # wff = wt_profile_dict['AV_AEMO2'][:, :self.nTimeslot]
         
         # Cutting off very extreme values
 
@@ -244,37 +250,48 @@ class WT:
 
         # Inverse of logit-normal transformation (Eq. (2) in ref. [31]) 
         R = np.linalg.cholesky(sigma_m).T
+        '''
+        self.wt_rand_pattern = np.random.rand(self.nTimeslot, n_total_scen)/2
 
-        wt_rand_pattern = np.random.randn(n_total_scen, nTimeslot)
-
-        y = np.tile(mu, (n_total_scen,1)) + wt_rand_pattern @ R
-        Wind = (1 + np.exp(-y))**-1
+        # y = np.tile(mu, (n_total_scen,1)) + wt_rand_pattern @ R
+        # Wind = (1 + np.exp(-y))**-1
 
         # Checking correlation, mean and true mean of data
-        corr_check_coeff = np.corrcoef(Wind, rowvar = False)
-        mu_Wind = Wind.mean(axis=0)
-        true_mean_Wind = (1+ np.exp(-mu))**-1
+        # corr_check_coeff = np.corrcoef(Wind, rowvar = False)
+        # mu_Wind = Wind.mean(axis=0)
+        # true_mean_Wind = (1+ np.exp(-mu))**-1
 
         # Reshaping the data structure
-
-        nWind = Wind.T
-        nWind = nWind.reshape(nTimeslot, N_max + OOS_max, IR_max)
+        nWind = self.wt_rand_pattern
+        self.nWind = nWind.reshape(self.nTimeslot, N_max + OOS_max, IR_max)
         
         # peak N and N' samples
         j = 0
-        WPf_max = nWind[:,0:N_max,j].transpose()
-        WPr_max = nWind[:,N_max:N_max + OOS_max, j].transpose()
-        WPf = WPf_max[0:N,:]
-        WPr = WPr_max[0:OOS_sim,:]
-        '''
+        self.WPf_max = self.nWind[:,0:N_max,:]
+        self.WPr_max = self.nWind[:,N_max:N_max + OOS_max, :]
         
-        #self.profile = WPf[0:N,:].transpose()
-        self.profile = wff[-N:,:].transpose()
-        self.oos_profile = wff[-N-OOS_max:-N,:].transpose()
+    def set_profile(self, N, count):
+        self.WP = self.nWind[:,:,count]
+        self.WPf = self.WPf_max[:,0:N,count]
+        self.WPr = self.WPr_max[:,:,count]
+
+        self.profile = self.WPf[:,0:N]
+        # self.profile = wff[-N:,:].transpose()
         self.profile_mu = self.profile.mean(axis = 1)
         self.profile_mu = self.profile_mu.reshape(len(self.profile_mu),1)
         self.profile_xi = self.profile - np.tile(self.profile_mu,(1, self.profile.shape[1]))
-        self.oos_profile_xi = self.oos_profile - np.tile(self.profile_mu, (1, self.oos_profile.shape[1]))
+        self.profile_xi = self.profile_xi / self.divide_factor
+        self.oos_max_profile_xi = self.WPr - np.tile(self.profile_mu, (1, self.WPr.shape[1]))
+        
+        self.all_profile_xi = self.WP - np.tile(self.profile_mu, (1,self.WP.shape[1]))
+        
+        self.worst_profile_xi = np.zeros(self.nTimeslot)
+        
+        for i in range(self.nTimeslot):
+            self.worst_profile_xi[i] = np.min(self.all_profile_xi[i,:])
+        
+        
+        
         
 class PV:
     def __init__(self, name,code, count):
@@ -289,10 +306,6 @@ class PV:
     def set_power(self, max_power):
         # Unit [kW]
         self.max_power = max_power
-        divide_factor = self.case_dict['divide_factor']
-        self.profile_mu = self.profile_mu * max_power 
-        self.profile_xi = self.profile_xi * max_power / divide_factor
-        self.oos_profile_xi = self.oos_profile_xi * max_power / divide_factor
         
     def get_res_data(self):
         self.res_data = [
@@ -310,25 +323,24 @@ class PV:
         self.case_dict = case_dict
         
         path = model_dict['path']
-        nTimeslot = model_dict['nTimeslot']
+        self.nTimeslot = model_dict['nTimeslot']
+        
+        self.divide_factor = self.case_dict['divide_factor']
         
         n_total_scen = self.case_dict['n_total_scen']
         N_max = self.case_dict['N_max']
         OOS_max = self.case_dict['OOS_max']
         IR_max = self.case_dict['IR_max']
         
-        N = self.case_dict['N']
-        OOS_sim = self.case_dict['OOS_sim']
-        
         pv_profile_dict = pd.read_excel(f"{path}/src/Data_Generation/발전실적(~2022.10.31)_modified.xlsx", 1, header=0)
-        pv_data = pv_profile_dict.iloc[:,1:1 + nTimeslot].values
+        pv_data = pv_profile_dict.iloc[:,1:1 + self.nTimeslot].values
         pv_profile = pv_data / np.max(pv_data)
         pv_profile = pv_profile.astype(float)
         wff = np.maximum(pv_profile, 1e-6)
         wff = wff
         
         # wt_profile_dict = io.loadmat(f'{path}/src/Data_Generation/AV_AEMO')
-        # wff = wt_profile_dict['AV_AEMO2'][:, :nTimeslot]
+        # wff = wt_profile_dict['AV_AEMO2'][:, :self.nTimeslot]
         
         # Cutting off very extreme values
 
@@ -352,35 +364,46 @@ class PV:
 
         # Inverse of logit-normal transformation (Eq. (2) in ref. [31]) 
         R = np.linalg.cholesky(sigma_m).T
+        '''
+        wt_rand_pattern = np.random.rand(self.nTimeslot, n_total_scen)
 
-        wt_rand_pattern = np.random.randn(n_total_scen, nTimeslot)
-
-        y = np.tile(mu, (n_total_scen,1)) + wt_rand_pattern @ R
-        Wind = (1 + np.exp(-y))**-1
+        # y = np.tile(mu, (n_total_scen,1)) + wt_rand_pattern @ R
+        # Wind = (1 + np.exp(-y))**-1
 
         # Checking correlation, mean and true mean of data
-        corr_check_coeff = np.corrcoef(Wind, rowvar = False)
-        mu_Wind = Wind.mean(axis=0)
-        true_mean_Wind = (1+ np.exp(-mu))**-1
+        # corr_check_coeff = np.corrcoef(Wind, rowvar = False)
+        # mu_Wind = Wind.mean(axis=0)
+        # true_mean_Wind = (1+ np.exp(-mu))**-1
 
         # Reshaping the data structure
-
-        nWind = Wind.T
-        nWind = nWind.reshape(nTimeslot, N_max + OOS_max, IR_max)
+        nWind = wt_rand_pattern
+        self.nWind = nWind.reshape(self.nTimeslot, N_max + OOS_max, IR_max)
         
         # peak N and N' samples
         j = 0
-        WPf_max = nWind[:,0:N_max,j].transpose()
-        WPr_max = nWind[:,N_max:N_max + OOS_max, j].transpose()
-        WPf = WPf_max[0:N,:]
-        WPr = WPr_max[0:OOS_sim,:]
-        '''
-        self.profile = wff[-N:,:].transpose()
-        self.oos_profile = wff[-N-OOS_max:-N,:].transpose()
+        self.WPf_max = self.nWind[:,0:N_max,:]
+        self.WPr_max = self.nWind[:,N_max:N_max + OOS_max, :]
+        
+    def set_profile(self, N, count):
+        self.WP = self.nWind[:,:,count]
+        self.WPf = self.WPf_max[:,0:N,count]
+        self.WPr = self.WPr_max[:,:,count]
+
+        self.profile = self.WPf[:,0:N]
+        # self.profile = wff[-N:,:].transpose()
         self.profile_mu = self.profile.mean(axis = 1)
         self.profile_mu = self.profile_mu.reshape(len(self.profile_mu),1)
         self.profile_xi = self.profile - np.tile(self.profile_mu,(1, self.profile.shape[1]))
-        self.oos_profile_xi = self.oos_profile - np.tile(self.profile_mu, (1, self.oos_profile.shape[1]))
+        self.profile_xi = self.profile_xi / self.divide_factor
+        self.oos_max_profile_xi = self.WPr - np.tile(self.profile_mu, (1, self.WPr.shape[1]))
+        
+        self.all_profile_xi = self.WP - np.tile(self.profile_mu, (1,self.WP.shape[1]))
+        
+        self.worst_profile_xi = np.zeros(self.nTimeslot)
+        
+        for i in range(self.nTimeslot):
+            self.worst_profile_xi[i] = np.min(self.all_profile_xi[i,:])
+        
         
 class ESS:
     def __init__(self, name,code, count, ess):
@@ -470,8 +493,7 @@ class DG:
     
     
     
-    
-    
+
     
     
     
