@@ -10,11 +10,12 @@ import numpy as np
 import gurobipy as gp
 from gurobipy import GRB
 import time
-
+from scipy.stats import norm
 class gurobi_simulation:
     def __init__(self, NAME, vpp, model_dict, case_dict):
         
         self.m = gp.Model(name=NAME)
+        self.m.setParam('OutputFlag',model_dict['output_flag'])
         self.vpp = vpp
         
         self.model_dict = model_dict
@@ -27,6 +28,7 @@ class gurobi_simulation:
         
         try:
             self.res_list = self.vpp.wt_list + self.vpp.pv_list
+            self.sum_res_profile_xi = self.vpp.sum_res_profile_xi
         except: 
             print("Fail to generate the res_list")
         
@@ -38,6 +40,9 @@ class gurobi_simulation:
         self.dayahead_smp = self.vpp.da_smp_profile
         self.nICC = self.nDG
         self.N_PIECE = vpp.N_PIECE
+        
+        self.all_res_cov = self.vpp.all_res_cov 
+        
         
         self.case_dict = case_dict
         self.is_case1 = self.case_dict['case'] == 1
@@ -51,6 +56,8 @@ class gurobi_simulation:
         self.is_case_SAA = self.case_dict['case'] == 'SAA'
         self.is_case_robust = self.case_dict['case'] == 'robust'
         self.is_case_momentDRO = self.case_dict['case'] == 'moment_DRO'
+        self.is_case_riskneural = self.case_dict['case'] == 'risk_neural'
+        
         
         self.is_bid_var = False
         self.is_bid_DRO = False
@@ -88,7 +95,12 @@ class gurobi_simulation:
         elif self.is_case_robust:
             self.is_bid_var = True
             self.is_uncertainty = False
-            self.is_bid_SAA = True
+            self.is_bid_robust = True
+            self.is_dg_reserve = True
+            self.is_ess_reserve = True
+            
+        elif self.is_case_riskneural:
+            self.is_bid_var = True
             self.is_dg_reserve = True
             self.is_ess_reserve = True
             
@@ -127,7 +139,7 @@ class gurobi_simulation:
             self.is_bid_DRCC = True
             self.is_dg_reserve = True
             self.is_ess_reserve = True
-            self.is_reserve_cost = True
+            self.is_reserve_cost = False
             
             
         elif self.is_case7:
@@ -137,7 +149,7 @@ class gurobi_simulation:
             self.is_bid_DRCC = True
             self.is_dg_reserve = True
             self.is_ess_reserve = True
-            self.is_reserve_cost = True
+            self.is_reserve_cost = False
             self.is_igdt_risk_averse = True
                 
         else:
@@ -210,11 +222,11 @@ class gurobi_simulation:
         
         if self.is_bid_momentDRO:
             
-            self.theta_0 = self.m.addVars(self.nTimeslot, lb = -100000, vtype = gp.GRB.CONTINUOUS, name='theta_0')
-            self.theta_1 = self.m.addVars(self.nTimeslot, lb = -100000, vtype = gp.GRB.CONTINUOUS, name='theta_1')
+            self.theta_0 = self.m.addVars(self.nTimeslot, lb = -500000, vtype = gp.GRB.CONTINUOUS, name='theta_0')
+            self.theta_1 = self.m.addVars(self.nTimeslot, lb = 0, vtype = gp.GRB.CONTINUOUS, name='theta_1')
             self.theta_2 = self.m.addVars(self.nTimeslot, lb = 0.00001, vtype = gp.GRB.CONTINUOUS, name='theta_2')
             
-            self.lambda_o = self.m.addVars(self.nTimeslot, lb = 0, vtype = gp.GRB.CONTINUOUS, name='lambda_o')
+            self.lambda_o = self.m.addVars(self.nTimeslot, lb = -1000000, vtype = gp.GRB.CONTINUOUS, name='lambda_o')
             self.tau_1 = self.m.addVars(self.nTimeslot, lb = 0, vtype = gp.GRB.CONTINUOUS, name='tau_1')
             self.tau_2 = self.m.addVars(self.nTimeslot, lb = 0, vtype = gp.GRB.CONTINUOUS, name='tau_2')
             
@@ -307,11 +319,11 @@ class gurobi_simulation:
             #     ess_chg_r_sum = gp.quicksum(self.RD_essChg[i, j] for i in range(self.nESS))
             #     ess_sum = ess_sum + ess_dis_r_sum + ess_chg_r_sum
             
+
             self.m.addConstr(
                 self.Pbid[j] == wt_sum + pv_sum + dg_sum + ess_sum,
                 name=f'const_bid{j}'
-            )   
-            
+            )
         print("Add Bid Constraint")
                        
     def add_dg_constraints(self):
@@ -403,7 +415,7 @@ class gurobi_simulation:
                                          - sum((self.P_essDis[i, k] + self.RU_essDis[i,k] )* self.UNIT_TIME 
                                                / ess_list[i].efficiency / ess_list[i].max_capacity
                                                     for k in range(j + 1)) 
-                                         + sum((self.P_essChg[i, k] - self.RD_essChg[i,k] )* self.UNIT_TIME 
+                                         + sum((self.P_essChg[i, k] - self.RU_essChg[i,k] )* self.UNIT_TIME 
                                                * ess_list[i].efficiency / ess_list[i].max_capacity
                                                     for k in range(j + 1)) <= ess_list[i].maxSOC, 
                                               name=f'const_ess{i}_{j}_soc_max')
@@ -421,7 +433,7 @@ class gurobi_simulation:
                                           - sum((self.P_essDis[i, k] + self.RU_essDis[i,k] ) * self.UNIT_TIME 
                                                 / ess_list[i].efficiency / ess_list[i].max_capacity
                                                 for k in range(self.nTimeslot))
-                                          + sum((self.P_essChg[i, k] + self.RU_essChg[i,k] ) * self.UNIT_TIME 
+                                          + sum((self.P_essChg[i, k] - self.RU_essChg[i,k] ) * self.UNIT_TIME 
                                                 * ess_list[i].efficiency / ess_list[i].max_capacity
                                                 for k in range(self.nTimeslot)) == ess_list[i].termSOC,
                                          name=f'const_ess{i}_term')
@@ -465,9 +477,9 @@ class gurobi_simulation:
                     for i in range(self.nRES):
                         
                         if not self.is_igdt_risk_averse:
-                            lhs += self.dayahead_smp[j] * self.res_list[i].profile_xi[j][n]
+                            lhs -= self.dayahead_smp[j] * self.res_list[i].profile_xi[j][n]
                         else:
-                            lhs += (1-self.alpha) * self.dayahead_smp[j] * self.res_list[i].profile_xi[j][n]
+                            lhs -= (1-self.alpha) * self.dayahead_smp[j] * self.res_list[i].profile_xi[j][n]
                     self.m.addConstr(self.s_obj[n,j] >= lhs, name = f'Const_si_dual_{j}_{n}')
                 # Add Dual Norm Constraint for obj
                        
@@ -486,11 +498,13 @@ class gurobi_simulation:
        self.y_c = self.m.addMVar((self.nScen, self.nTimeslot), vtype = gp.GRB.BINARY, name='y_c' )
               
        
-       print("start drjcc")
+       print("start SAA-cc")
        
        for t in range(self.nTimeslot):
            
-           lhs_x = 0.1 * self.Pbid[t]
+           Pbid_under = gp.quicksum(1/self.nScen /self.dayahead_smp[t] * self.s_obj[i,t] for i in range(self.nScen))
+           
+           lhs_x = 0.1 * (self.Pbid[t] - Pbid_under )
            if self.is_dg_reserve:               
                lhs_x += gp.quicksum(self.RU_dg[gg,t] for gg in range(self.nDG))
                
@@ -531,7 +545,7 @@ class gurobi_simulation:
     def set_robust_Constraint(self):       
        
        print("start robust constraint")
-       
+       self.worst_xi = []
        for t in range(self.nTimeslot):
            
            lhs_x = 0.1 * self.Pbid[t]
@@ -540,7 +554,8 @@ class gurobi_simulation:
                
            if self.is_ess_reserve:
                lhs_x += gp.quicksum(self.RU_essDis[ee,t] + self.RU_essChg[ee,t] for ee in range(self.nESS))
-           rhs = gp.quicksum(-1* np.min(self.res_list[rr].worst_profile_xi[t][:]) for rr in range(self.nRES))
+           rhs = gp.quicksum(-1* self.res_list[rr].worst_profile_xi[t] for rr in range(self.nRES))
+           self.worst_xi.append(rhs)
            self.m.addConstr(lhs_x >= rhs , name=f"const_robust_{t}")
            
            # Y에 대해 어떻게 반영 할지 고민필요함. 
@@ -557,8 +572,8 @@ class gurobi_simulation:
            
            if t % 5 ==0 :
                print(f"iteration {t} of sum robust drjcc")
+
        print("finish max constraint of DRJCC")
-    
     
     def set_momentDRO_obj_constraints(self):
         print("start set_momentDRO_obj_constriants")
@@ -567,83 +582,165 @@ class gurobi_simulation:
             self.gamma1 = self.model_dict['gamma1']            
             self.gamma2 = self.model_dict['gamma2']
             
-
+            sqr_g1 = np.sqrt(self.gamma1)
+            sqr_g2 = np.sqrt(self.gamma2)
+            
+            # if self.model_dict['moment_std'] == :
+            
+            self.res_profile_mu = np.zeros(self.nTimeslot)
+            self.res_profile_std = np.zeros(self.nTimeslot)
+            
+            self.rhs_2norm = self.m.addMVar(self.nTimeslot, name='rhs_2norm')
+            self.rhs_slack1 = self.m.addMVar(self.nTimeslot, lb=-10000000.0, name='rhs_slack1')
+            self.rhs_slack2 = self.m.addMVar(self.nTimeslot, lb=-10000000.0, name='rhs_slack2')
+            self.rhs_slack3 = self.m.addMVar(self.nTimeslot, lb=-10000000.0, name='rhs_slack3')
+            
+            self.test_2norm = self.m.addMVar(self.nTimeslot, name='test_2norm')
+            
+            # for j in range(self.nTimeslot): 
+            #     for i in range(self.nRES):
+            #         self.res_profile_mu[j] += self.res_list[i].profile_mu[j]
+            #         self.res_profile_std[j] += self.res_list[i].profile_std[j]
+            
+            self.res_profile_mu = self.sum_res_profile_xi.mean(axis=1)
+            self.res_profile_std = self.sum_res_profile_xi.std(axis=1)
+            self.xi_max_list = []
+            self.res_profile_mu = np.zeros(self.nTimeslot)
+            const = 1000
+            
+            
             for j in range(self.nTimeslot):
+                
+                lhs = (self.theta_2[j] + self.lambda_o[j])/const
+                
+                # self.m.addGenConstrNorm( self.rhs_2norm[j], 
+                #                         [self.theta_2[j]-self.lambda_o[j], self.theta_1[j], np.sqrt(self.gamma2*self.res_profile_std[j]**2 - 2*self.res_profile_mu[j]*sqr_g1*self.res_profile_std[j] + self.res_profile_mu[j]**2)],
+                #                         2.0, f"Const_twonorm_CC_{j}")
+                
+                self.xi_max = np.sqrt(self.gamma2*self.res_profile_std[j]**2 - 2*self.res_profile_mu[j]*sqr_g1*self.res_profile_std[j] + self.res_profile_mu[j]**2)
+                self.m.addConstr( self.rhs_slack1[j] == (self.theta_2[j] - self.lambda_o[j])/const, name=f"Const_rhs_slack1_{j}")
+                self.m.addConstr( self.rhs_slack2[j] == (self.theta_1[j])/const, name=f"Const_rhs_slack2_{j}")
+                self.m.addConstr( self.rhs_slack3[j] == (self.dayahead_smp[j] * self.xi_max)/const, name=f"Const_rhs_slack3_{j}")
+                
+                self.xi_max_list.append(self.xi_max)
+             
+                self.m.addGenConstrNorm( self.rhs_2norm[j], 
+                                        [self.rhs_slack1[j],self.rhs_slack2[j] , self.rhs_slack3[j]],
+                                        2.0, f"Const_2norm_CC_{j}")                   
+                self.m.addConstr(lhs >= self.rhs_2norm[j], name=f"Const_2norm_comp{j}")
+            
+            for j in range(self.nTimeslot):
+                
                 # Constraints that c \xi <= si regardless gamma term with (h-H\xi)
                 
-                self.theta_0[j] + self.theta_1[j] - (self.tau_1[j]*() - self.tau_2[j](-np.sqrt(self.gamma1)))
+                lhs = self.theta_0[j] + self.theta_1[j] - (self.tau_1[j]*(sqr_g1*self.res_profile_std[j] + self.res_profile_mu[j]) 
+                                                           - self.tau_2[j]*(-sqr_g1*self.res_profile_std[j] + self.res_profile_mu[j])) - self.theta_2[j]
                 
-                for n in range(self.nScen):
-                    lhs = 0
-                    for i in range(self.nRES):
-                        
-                        if not self.is_igdt_risk_averse:
-                            lhs += self.dayahead_smp[j] * self.res_list[i].profile_xi[j][n]
-                        else:
-                            lhs += (1-self.alpha) * self.dayahead_smp[j] * self.res_list[i].profile_xi[j][n]
-                    self.m.addConstr(self.s_obj[n,j] >= lhs, name = f'Const_si_dual_{j}_{n}')
-                # Add Dual Norm Constraint for obj
-                       
+                rhs = 0
+                
+                self.m.addConstr(lhs >= rhs, name=f"Const_momentDRO_obj_{j}") 
+                
+            for j in range(self.nTimeslot):
+                rhs3 = (self.tau_1[j] - self.tau_2[j])
+                lhs3 = self.dayahead_smp[j] # h(x) ..
+                self.m.addConstr(lhs3 == rhs3, name=f"Const_momentDRO_tau_obj_{j}")
+ 
+            for j in range(self.nTimeslot):
+                rhs4 = (self.lambda_o[j] - self.gamma1* self.res_profile_std[j]**2)
+                lhs4 = self.theta_0[j] # h(x) ..
+                self.m.addConstr(lhs4 >= rhs4, name=f"Const_momentDRO_theta_obj_{j}")
+                   
             print("end set_momentDRO_obj_constriants")   
         else:
             raise Exception("No Considered Case at momentDRO obj")  
-    
-    
-    def set_DRCC_Constraint_JCC(self):
-        
+
+
+    def set_momentDRO_Constraint(self):
         
         self.eps = self.case_dict['eps']
         
-        self.k_c = self.m.addMVar((self.nDG, self.nTimeslot), name = 'k_c')
-        self.s_c = self.m.addMVar((self.nScen,self.nTimeslot), lb= 0, name = 's_c')
-        self.t_c = self.m.addMVar(self.nTimeslot, lb= 0, name = 't_c')
+        self.z_score = norm.ppf(1-self.eps)
         
+        if self.gamma1/self.gamma2 <= self.eps:
+            sqr_g1 = np.sqrt(self.gamma1)
+            ki = sqr_g1 + np.sqrt( ((1-self.eps)/self.eps)*(self.gamma2 - self.gamma1))
+        else:            
+            ki = np.sqrt(self.gamma2/self.eps)
+        print("ki = ", ki)
+
         
-        self.lhs_CC = self.m.addMVar((self.nDG, self.nRES, self.nTimeslot), lb = -1000000, ub = 1000000, vtype=gp.GRB.CONTINUOUS, name='lhs_CC')
-        self.lhs_dual_CC = self.m.addMVar((self.nDG, self.nTimeslot), name='lhs_dual_CC')
-        
-        self.lhs_max = self.m.addMVar((self.nDG, self.nScen, self.nTimeslot), lb = 0, name='lhs_max')
-        self.lhs_sum = self.m.addMVar((self.nDG, self.nScen, self.nTimeslot), lb = -10000000, name='lhs_sum')
-        
-        print("start drjcc")
-    
-        
+        print("start moment_drjcc")
+        self.res_cov_sum = np.zeros(self.nTimeslot)
+        self.profile_xi_std_list = []
+        self.lhs_xi_list = []
         for t in range(self.nTimeslot):
-            sum_sc = gp.quicksum(self.s_c[ss, t] for ss in range(self.nScen))
-            lhs_sc = self.eps * self.nScen * self.t_c[t] - sum_sc
+        
+            Pbid_under = (self.theta_0[t] + self.lambda_o[t]) /self.dayahead_smp[t]
+                
+            rhs_x = 0.1 * (self.Pbid[t] - Pbid_under)
+            if self.is_dg_reserve:               
+                rhs_x += gp.quicksum(self.RU_dg[gg,t] for gg in range(self.nDG))
+                
+            if self.is_ess_reserve:
+                rhs_x += gp.quicksum(self.RU_essDis[ee,t] + self.RU_essChg[ee,t] for ee in range(self.nESS))
             
-            for gg in range(self.nDG):
-                lhs_x = self.RU_dg[gg,t] + self.k_c[gg,t]
+            lhs_mu = self.res_profile_mu[t]
+            #self.res_cov_sum[t] = np.sqrt(np.sum(self.all_res_cov[t]))
+            
+            # lhs_xi = ki*self.res_cov_sum[t]
+            
+            # self.lhs_xi += np.sqrt((1-self.eps)/self.eps) * self.profile_xi_std
                 
-                
-                for n in range(self.nScen):                
-                    
-                    # -1 for (b- Amat) & -1 for -Y\xi
-                    lhs_u = - gp.quicksum( self.Y[gg,rr,t] * self.res_list[rr].profile_xi[t][n] for rr in range(self.nRES))
-                    
-                    self.m.addConstr( self.lhs_sum[gg,n,t] == lhs_x + lhs_u, name= f"lhs_sum{gg}_{t}_{n}")
-                    self.m.addGenConstrMax(self.lhs_max[gg,n,t], [self.lhs_sum[gg,n,t], 0.0], name=f"max_assign{gg}_{t}_{n}")
-                    
-                    rhs = self.t_c[t] - self.s_c[n,t]
-                
-                    self.m.addConstr(self.lhs_max[gg,n,t] >= rhs , name=f"max_const{gg}_{t}_{n}")
-                
-                for ww in range(self.nRES):                
-                    
-                    self.m.addConstr( gp.quicksum(self.Y[k,ww,t] for k in range(self.nDG)) ==  - 1, name = f'uncertainty_balance{ww}_{t}') 
-                    
-                    self.m.addConstr(self.lhs_CC[gg,ww,t] == -1 * -1 * self.Y[gg, ww,t] )
-                self.m.addGenConstrNorm( self.lhs_dual_CC[gg,t], self.lhs_CC[gg,:,t], GRB.INFINITY, f"Const_dualnorm_CC_{t}_{n}")
-                
-                # rhs_sc = 0.0000005 * self.nScen * self.lhs_dual_CC[gg,t]
-                rhs_sc = self.theta[t] * self.nScen * self.lhs_dual_CC[gg,t]
-                
-                #self.theta[t]/1000 -> self.theta[t]
-                self.m.addConstr( lhs_sc >= rhs_sc, name = f"const_DRCC_{t}")
+            if self.case_dict['moment_eps'] == 'z_score':
+                self.lhs_xi = self.z_score * self.res_profile_std[t]
+            elif self.case_dict['moment_eps'] == 'ki':                    
+                self.lhs_xi = ki * self.profile_xi_std[t]
+            self.lhs_xi_list.append(self.lhs_xi)
+            # lhs_xi = self.z_score * gp.quicksum(self.res_list[rr].profile_std[t] for rr in range(self.nRES))
+            
+            self.m.addConstr(rhs_x >= self.lhs_xi, name=f"Const_momentDRO_CC_{t}")
                 
             if t % 5 ==0 :
-                print(f"iteration {t} of sum drjcc")
-        print("finish max constraint of DRJCC")
+                print(f"iteration {t} of sum moment_drjcc")
+        print("finish max constraint of moment_DRJCC")
+
+    def set_DRCC_Constraint(self):       
+       
+       self.eps = self.case_dict['eps']       
+       
+       self.s_c = self.m.addMVar((self.nScen,self.nTimeslot), lb= 0, name = 's_c')
+       self.t_c = self.m.addMVar(self.nTimeslot, lb= 0, name = 't_c')
+       
+       
+       self.lhs_CC = self.m.addMVar((self.nRES, self.nTimeslot), lb = -1000000, ub = 1000000, vtype=gp.GRB.CONTINUOUS, name='lhs_CC')
+       self.lhs_dual_CC = self.m.addMVar((self.nTimeslot), name='lhs_dual_CC')
+       
+       self.lhs_max = self.m.addMVar((self.nScen, self.nTimeslot), lb = 0, name='lhs_max')
+       self.lhs_sum = self.m.addMVar((self.nScen, self.nTimeslot), lb = -10000000, name='lhs_sum')
+       
+       print("start drjcc")
+       
+       for t in range(self.nTimeslot):
+           
+           lhs_x = 0.1 * self.Pbid[t]
+           if self.is_dg_reserve:               
+               lhs_x += gp.quicksum(self.RU_dg[gg,t] for gg in range(self.nDG))
+               
+           if self.is_ess_reserve:
+               lhs_x += gp.quicksum(self.RU_essDis[ee,t] + self.RU_essChg[ee,t] for ee in range(self.nESS))
+               
+                    
+           
+           for n in range(self.nScen):
+               # -1 for (b- Amat) & -1 for -Y\xi
+               lhs_u = -1 * gp.quicksum( -1 * self.res_list[rr].profile_xi[t][n] for rr in range(self.nRES))
+               
+               self.m.addConstr( self.lhs_sum[n,t] == lhs_x + lhs_u, name= f"lhs_sum{t}_{n}")
+               self.m.addGenConstrMax(self.lhs_max[n,t], [self.lhs_sum[n,t], 0.0], name=f"max_assign_{t}_{n}")
+               
+               rhs = self.t_c[t] - self.s_c[n,t]
+               
+               self.m.addConstr(self.lhs_max[n,t] >= rhs , name=f"max_const{t}_{n}")
     
     def set_base_Objectives(self):
         print("start set_base_objectives")
@@ -669,11 +766,21 @@ class gurobi_simulation:
         elif self.is_bid_robust:
             self.obj1 = gp.quicksum(self.dayahead_smp[j]*self.Pbid[j] for j in range(self.nTimeslot))
             # self.obj2 = gp.quicksum(self.theta[j] * self.lambda_obj[j] for j in range(self.nTimeslot))
-            self.obj3 = gp.quicksum(1/self.nScen * self.dayahead_smp[j] * -1 * np.min(self.res_list[rr].worst_profile_xi[j][:]) for rr in range(self.nRES) for j in range(self.nTimeslot))
+            self.obj3 = gp.quicksum(self.dayahead_smp[j] * -1 * self.res_list[rr].worst_profile_xi[j] for rr in range(self.nRES) for j in range(self.nTimeslot))
             
             self.obj_sum_without_bid = - self.obj3
             obj = self.obj1 - self.obj3
-            print("Consider Case for robust at base")            
+            print("Consider Case for robust at base")       
+            
+        elif self.is_bid_momentDRO:
+            self.obj1 = gp.quicksum(self.dayahead_smp[j]*self.Pbid[j] for j in range(self.nTimeslot))
+            # self.obj2 = gp.quicksum(self.theta[j] * self.lambda_obj[j] for j in range(self.nTimeslot))
+            self.obj3 = gp.quicksum(self.theta_0[j] + self.lambda_o[j] for j in range(self.nTimeslot))
+            
+            self.obj_sum_without_bid = - self.obj3
+            obj = self.obj1 - self.obj3            
+            print("Consider Case for momentDRO at base")  
+            
         else:
             obj = gp.quicksum(self.dayahead_smp[j]*self.Pbid[j] for j in range(self.nTimeslot))
                     #self.obj = gp.quicksum(self.dayahead_smp[j] for j in range(self.nTimeslot))
@@ -686,7 +793,7 @@ class gurobi_simulation:
             if self.is_dg_reserve:
                 self.obj_dg_ramp = gp.quicksum(self.dayahead_smp[j] * self.RU_dg[gg,j] for gg in range(self.nDG) for j in range(self.nTimeslot))
                 
-                if not self.is_reserve_cost:
+                if self.is_reserve_cost:
                     self.obj_sum_without_bid = self.obj_sum_without_bid + self.obj_dg_ramp
                     obj = obj + self.obj_dg_ramp
                     print("Obj - DG - RAMP")
@@ -697,7 +804,7 @@ class gurobi_simulation:
                 self.obj_ess_chg_ramp  = gp.quicksum(self.RU_essChg[i, j] * self.dayahead_smp[j] for i in range(self.nESS) for j in range(self.nTimeslot))
                 self.obj_ess_ramp = self.obj_ess_dis_ramp + self.obj_ess_chg_ramp 
                 
-                if not self.is_reserve_cost:
+                if self.is_reserve_cost:
                     obj = obj + self.obj_ess_ramp
                     self.obj_sum_without_bid = self.obj_sum_without_bid + self.obj_ess_ramp
                     print("Obj - ESS - RAMP")
@@ -806,12 +913,13 @@ class gurobi_simulation:
         
         #     print("add_igdt_risk_seeking_constraints sucessfully") 
         
-    def solve(self, tol, timelimit=None):
+    def solve(self, tol, timelimit=600):
         
         mip_gap = tol[0]
         feas_tol = tol[1]
         self.m.setParam(GRB.Param.MIPGap, mip_gap)
         self.m.setParam(GRB.Param.FeasibilityTol, feas_tol)
+        self.m.setParam('TimeLimit', timelimit)
         
         
         sol = self.m.optimize()
@@ -874,6 +982,9 @@ class gurobi_simulation:
         lhs_maxSol = np.zeros([self.nScen, self.nTimeslot])
         lhs_dual_CCSol = np.zeros([self.nTimeslot])
         Y_Sol = np.zeros([self.nDG, self.nRES, self.nTimeslot])
+        
+        theta_0Sol = np.zeros([self.nTimeslot])
+        lambda_oSol = np.zeros([self.nTimeslot])
         
         Z_Sol = np.zeros([self.nTimeslot])
         dZ_Sol = np.zeros([self.nTimeslot])
@@ -950,6 +1061,12 @@ class gurobi_simulation:
                 for i in range(self.nRES):
                     for n in range(self.nScen):
                         YY_Sol[i,n,j] = self.m.getVarByName(f"YY_{i}_{n}_{j}").X
+                        
+            if self.is_bid_momentDRO:
+                
+                
+                theta_0Sol[j] = self.m.getVarByName(f"theta_0[{j}]").X
+                lambda_oSol[j] = self.m.getVarByName(f"lambda_o[{j}]").X
             
             for i in range(self.nESS):
                 P_essDisSol[i,j] = self.m.getVarByName(f"P_essDis[{i},{j}]").X
@@ -1029,6 +1146,11 @@ class gurobi_simulation:
         if self.is_DRO_gamma:
             slack_dict['gamma_obj'] = gamma_objSol
             slack_dict['YY'] = YY_Sol
+         
+        if self.is_bid_momentDRO:
+            slack_dict['theta_0'] = theta_0Sol
+            slack_dict['lambda_o'] = lambda_oSol
+         
             
         if self.is_bid_DRCC:
             slack_dict['s_c'] = s_cSol
@@ -1054,7 +1176,7 @@ class gurobi_simulation:
         
         return P_dict, U_dict, slack_dict
     
-    def optimize(self, mip_gap, feas_tol):
+    def optimize(self, mip_gap, feas_tol, timelimit=None):
         
         self.add_Variables()
         self.add_bid_constraints()
@@ -1070,7 +1192,8 @@ class gurobi_simulation:
             self.set_SAA_Constraint()
             
         if self.is_bid_robust:
-            self.set_robust_Constraint()
+            print("No need Robust Constraint")
+            # self.set_robust_Constraint()
             
         if self.is_bid_momentDRO:
             self.set_momentDRO_obj_constraints()
@@ -1120,7 +1243,11 @@ class gurobi_simulation:
                 
                 if self.is_bid_DRO:
                     lambda_objSol = slack_dict['lambda_obj']
-                s_objSol = slack_dict['s_obj']
+                    s_objSol = slack_dict['s_obj']
+                    
+                if self.is_bid_SAA:
+                    s_objSol = slack_dict['s_obj']                    
+                    
                 
                 RbidSol = np.zeros(self.nTimeslot)
                 if self.is_dg_reserve:
@@ -1133,17 +1260,18 @@ class gurobi_simulation:
                 
                 for j in range(self.nTimeslot):
                     if self.is_reserve_cost:
-                        obj1[j] = self.dayahead_smp[j] * (PbidSol[j])
+                        obj1[j] = self.dayahead_smp[j] * (PbidSol[j] + RbidSol[j])                  
                     else:
-                        obj1[j] = self.dayahead_smp[j] * (PbidSol[j] + RbidSol[j])
+                        obj1[j] = self.dayahead_smp[j] * (PbidSol[j])
                     
                     
                     if self.is_bid_DRO:
                         obj2[j] = self.theta[j] * lambda_objSol[j]
                     
-                    for i in range(self.nScen):
-                        obj3_full[i,j] = 1/self.nScen * s_objSol[i,j]
-                        obj3[j] += obj3_full[i,j]
+                    if self.is_bid_DRO or self.is_bid_SAA:
+                        for i in range(self.nScen):
+                            obj3_full[i,j] = 1/self.nScen * s_objSol[i,j]
+                            obj3[j] += obj3_full[i,j]
 
             except Exception as e:
                 print("Error")

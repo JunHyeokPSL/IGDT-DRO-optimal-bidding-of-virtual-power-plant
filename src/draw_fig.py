@@ -216,15 +216,15 @@ class Single_Case_Plot:
             ax1.plot(x_tick, self.P_bidSol - worst_bid, label=r'$P_h^{bid}$', color='blue', alpha = 0.8)
         
         self.plt_setting(r'$P_h^{bid}$ [kWh]')
-        ax1.set_ylim([min(self.P_bidSol)*0.9,max(self.P_bidSol)*1.5])
+        ax1.set_ylim([min(self.P_bidSol - worst_bid)*0.9,max(self.P_bidSol)*1.5])
         plt.legend(loc='upper left', ncol=3)
         ax2 = ax1.twinx()
-        ax2.plot(x_tick,self.da_smp, label=r'$\pi_h^{DA}$', color='red', alpha = 0.8)
-        ax2.set_ylim([min(self.da_smp)*0.3,max(self.da_smp)*1.1])
+        ax2.plot(x_tick,self.da_smp/1000, label=r'$\pi_h^{DA}$', color='red', alpha = 0.8)
+        ax2.set_ylim([min(self.da_smp/1000)*0.3,max(self.da_smp/1000)*1.1])
         
         plt.legend(loc='upper right', ncol=3)
         plt.grid(alpha=0.4, linestyle='--')
-        plt.ylabel(r'$\pi_h^{DA} [Won/kWh]$')
+        plt.ylabel(r'$\pi_h^{DA} [\$/kWh]$')
         plt.xlim([1 -0.7, 1 + self.nTimeslot - 0.3])
         plt.xticks(np.arange(1, self.nTimeslot+1, 1 / self.UNIT_TIME)) #, fontsize=8)
         
@@ -284,8 +284,9 @@ class Single_Case_Plot:
             save_fig(name, self.path)
             print(f"save the fig at location : {self.path}")
         
-    def make_reserve_plot(self, P_dict, save_flag = False):
-             
+    def make_reserve_plot(self, P_dict, save_flag = False):     
+ 
+
         plt.rcParams["figure.figsize"] = (8, 12)
         ax1 = plt.subplot(211)
         #plt.title('The Reserve of Generators for Uncertainty')
@@ -325,7 +326,7 @@ class Single_Case_Plot:
             reliability_array[i] = sum(check_array[i,:])
             
         ax2.plot(x_tick ,reliability_array, 'bo--', label=r'$\rho$', 
-                 markersize=7, alpha = 0.8, linewidth = 1.0)
+                  markersize=7, alpha = 0.8, linewidth = 1.0)
         ax2.set_ylim([70.0,104.0])
         ax2.yaxis.set_major_locator(ticker.MultipleLocator(base=5.0))
         self.plt_setting('Prop. of safey conditions [%]')        
@@ -368,6 +369,8 @@ class Single_Case_Plot:
         plt.ylabel('Box plot of uncertainty [kWh]')
         plt.xlim([1 -0.7, 1 + self.nTimeslot - 0.3])
         plt.xticks(np.arange(1, self.nTimeslot+1, 1 / self.UNIT_TIME)) #, fontsize=8)
+        
+        
         
         # self.plt_setting('Box plot of uncertainty [kWh]')
         if save_flag:

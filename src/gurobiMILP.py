@@ -9,11 +9,13 @@ import numpy as np
 import gurobipy as gp
 from gurobipy import GRB
 import time
+from scipy.optimize import minimize_scalar
 
 class gurobi_MILP:
     def __init__(self, NAME, vpp, model_dict, case_dict):
         
         self.m = gp.Model(name=NAME)
+        self.m.setParam('OutputFlag',model_dict['output_flag'])
         self.vpp = vpp
         
         self.model_dict = model_dict
@@ -25,6 +27,8 @@ class gurobi_MILP:
         self.dg_list = self.vpp.dg_list  
         try:
             self.res_list = self.vpp.res_list
+            self.sum_res_profile_xi = self.vpp.sum_res_profile_xi
+            self.sum_res_profile_sigi = self.vpp.sum_res_profile_sigi
         except: 
             print("Fail to generate the res_list")
         
@@ -101,17 +105,18 @@ class gurobi_MILP:
             self.is_bid_DRCC = True
             self.is_dg_reserve = True
             self.is_ess_reserve = True
-            self.is_reserve_cost = True
+            self.is_reserve_cost = False
             
             
         elif self.is_case7:
             self.is_bid_var = True
+            self.is_uncertainty = False
             self.is_bid_DRO = True
             self.is_DRO_gamma = True
             self.is_bid_DRCC = True
             self.is_dg_reserve = True
             self.is_ess_reserve = True
-            self.is_reserve_cost = True
+            self.is_reserve_cost = False
             self.is_igdt_risk_averse = True
                 
         else:
@@ -127,6 +132,7 @@ class gurobi_MILP:
         self.UNIT_TIME = self.case_dict['UNIT_TIME'] 
         self.nTimeslot = int (24 / self.UNIT_TIME)
         self.nScen = self.case_dict['N']        
+        self.eps = self.case_dict['eps']  
         
         self.beta = case_dict['beta']
         self.GRID_PIECE = case_dict['GRID_PIECE']
@@ -349,8 +355,8 @@ class gurobi_MILP:
                         self.m.addConstr(self.RU_essDis[i,j] <= self.ess_list[i].max_power - self.P_essDis[i, j],
                                         name=f'const_ess{i}_{j}_RUdis_max')
                                             
-                        self.m.addConstr(self.RD_essDis[i,j] <=  self.P_essDis[i, j],
-                                        name=f'const_ess{i}_{j}_RDdis_max')
+                        # self.m.addConstr(self.RD_essDis[i,j] <=  self.P_essDis[i, j],
+                        #                 name=f'const_ess{i}_{j}_RDdis_max')
                         
                         self.m.addConstr(self.RU_essChg[i,j] <=  self.P_essChg[i, j],
                                         name=f'const_ess{i}_{j}_RUchg_max')
@@ -363,7 +369,7 @@ class gurobi_MILP:
                                          - sum((self.P_essDis[i, k] + self.RU_essDis[i,k] )* self.UNIT_TIME 
                                                / ess_list[i].efficiency / ess_list[i].max_capacity
                                                     for k in range(j + 1)) 
-                                         + sum((self.P_essChg[i, k] - self.RD_essChg[i,k] )* self.UNIT_TIME 
+                                         + sum((self.P_essChg[i, k] - self.RU_essChg[i,k] )* self.UNIT_TIME 
                                                * ess_list[i].efficiency / ess_list[i].max_capacity
                                                     for k in range(j + 1)) <= ess_list[i].maxSOC, 
                                               name=f'const_ess{i}_{j}_soc_max')
@@ -375,16 +381,24 @@ class gurobi_MILP:
                                               + sum((self.P_essChg[i, k] - self.RU_essChg[i,k] ) * self.UNIT_TIME 
                                                     * ess_list[i].efficiency / ess_list[i].max_capacity
                                                     for k in range(j + 1)) >= ess_list[i].minSOC,
-                                              name=f'const_ess{i}_{j}_soc_min')
+                                              name=f'const_ess{i}_{j}_soc_min')                                             
+                        
+                        
+                        
                     # SoC terminal constraint
                     self.m.addConstr(ess_list[i].initSOC
                                           - sum((self.P_essDis[i, k] + self.RU_essDis[i,k] ) * self.UNIT_TIME 
                                                 / ess_list[i].efficiency / ess_list[i].max_capacity
                                                 for k in range(self.nTimeslot))
-                                          + sum((self.P_essChg[i, k] + self.RU_essChg[i,k] ) * self.UNIT_TIME 
+                                          + sum((self.P_essChg[i, k] - self.RU_essChg[i,k] ) * self.UNIT_TIME 
                                                 * ess_list[i].efficiency / ess_list[i].max_capacity
                                                 for k in range(self.nTimeslot)) == ess_list[i].termSOC,
                                          name=f'const_ess{i}_term')
+                    
+                    
+                    
+                    
+                    
                 else:                    
                     for j in range(self.nTimeslot):
                         # SoC min max constraint
@@ -417,7 +431,7 @@ class gurobi_MILP:
     def set_DRO_obj_constraints(self):
         print("start set_dro_obj_constriants")
         # Now consider the only WT case
-        if self.is_case2:
+        if not self.is_DRO_gamma:
             self.lhs_dual = self.m.addMVar((self.nScen, self.nTimeslot) , name = 'dro_dual_norm')
             for j in range(self.nTimeslot):
                 # Constraints that c \xi <= si regardless gamma term with (h-H\xi)
@@ -426,9 +440,9 @@ class gurobi_MILP:
                     for i in range(self.nRES):
                         
                         if not self.is_igdt_risk_averse:
-                            lhs += self.dayahead_smp[j] * self.res_list[i].profile_xi[j][n]
+                            lhs -= self.dayahead_smp[j] * self.res_list[i].profile_xi[j][n]
                         else:
-                            lhs += (1-self.alpha) * self.dayahead_smp[j] * self.res_list[i].profile_xi[j][n]
+                            lhs -= (1-self.alpha) * self.dayahead_smp[j] * self.res_list[i].profile_xi[j][n]
                     self.m.addConstr(self.s_obj[n,j] >= lhs, name = f'Const_si_dual_{j}_{n}')
                 # Add Dual Norm Constraint for obj
                 
@@ -452,7 +466,7 @@ class gurobi_MILP:
                     lhs = 0
                     for i in range(self.nRES):
                         
-                        xi_hat = self.res_list[i].profile_xi[j][n]
+                        xi_hat = -self.res_list[i].profile_xi[j][n]
                         Wmax = self.res_list[i].max_power
                         mu_hat = self.res_list[i].profile_mu[j]
                         
@@ -466,7 +480,7 @@ class gurobi_MILP:
                         H1 = 1
                         H2 = -1
                         lhs += self.gamma_obj[i,n,j]*(h1 - H1 * xi_hat)
-                        lhs += self.gamma_obj[i+self.nWT, n, j] * (h2 - H2 * xi_hat)                            
+                        lhs += self.gamma_obj[i+self.nWT, n, j] * (h2 - H2 * xi_hat)                               
                         
                     self.m.addConstr( lhs <= self.s_obj[n,j] , name = f'Const_si_dual_{j}_{n}')
                     
@@ -492,6 +506,55 @@ class gurobi_MILP:
         else:
             raise Exception("No Considered Case at DRO obj")  
     
+    def calculate_radius(self):
+        """
+        Description: Calculates the radius of the Wasserstein ambiguity set.
+    
+        Args:
+    
+        Returns:
+    
+        """
+        print("Calculate the Radius")
+        
+        self.thet = np.multiply(self.sum_res_profile_xi, self.sum_res_profile_sigi[:,np.newaxis])
+        
+        def obj_c(alpha: float) -> float: 
+            '''
+            Objective function for radius calculation, found from:
+    
+            Chaoyue Zhao, Yongpei Guan, Data-driven risk-averse stochastic optimization 
+            with Wasserstein metric, Operations Research Letters, Volume 46, Issue 2, 2018, 
+            Pages 262-267, ISSN 0167-6377, https://doi.org/10.1016/j.orl.2018.01.011.
+    
+            Args: 
+                alpha (float): decision variable
+                t (int): time index
+    
+            Returns:
+                J (float): objective function
+    
+            '''
+            #test = np.absolute(self.thet[self.time_run, :])
+            test = np.absolute(self.thet[self.time_run, :])
+    
+            # J = np.sqrt(np.absolute((1/(2*alpha))*(1+np.log(1/self.nScen*np.sum(np.exp(alpha*test**2))))))
+            J = np.sqrt(np.absolute( (1/(2*alpha))*(1+np.log(1/100*np.sum(np.exp(alpha*test**2)))  )))
+            return J
+    
+        self.theta_calc = np.zeros(self.nTimeslot)
+        self.C = np.zeros(self.nTimeslot)
+        for t in range(self.nTimeslot):
+            
+            self.time_run = t
+            alphaX = minimize_scalar(obj_c, method='bounded', bounds=(0.001, 100))
+            self.C[t] = 2*alphaX.x
+            Dd = 2*self.C[t]
+    
+            self.theta_calc[t] = Dd*np.sqrt((2/self.nScen)*np.log10(1/(1-self.eps)))
+        print("Calculated Theta: ", max(self.theta_calc))
+        self.theta = np.array([max(self.theta_calc)]*self.nTimeslot)
+    
     def set_DRCC_Constraint(self):       
        
        self.eps = self.case_dict['eps']       
@@ -507,10 +570,12 @@ class gurobi_MILP:
        self.lhs_sum = self.m.addMVar((self.nScen, self.nTimeslot), lb = -10000000, name='lhs_sum')
        
        print("start drjcc")
-       
+
        for t in range(self.nTimeslot):
+           Pbid_under = gp.quicksum(1/self.nScen /self.dayahead_smp[t] * self.s_obj[i,t] for i in range(self.nScen))
+           Pbid_under += self.theta[t] *self.lambda_obj[t] /self.dayahead_smp[t]
            
-           lhs_x = 0.1 * self.Pbid[t]
+           lhs_x = 0.1 * (self.Pbid[t] - Pbid_under)
            if self.is_dg_reserve:               
                lhs_x += gp.quicksum(self.RU_dg[gg,t] for gg in range(self.nDG))
                
@@ -630,7 +695,7 @@ class gurobi_MILP:
             if self.is_dg_reserve:
                 self.obj_dg_ramp = gp.quicksum(self.dayahead_smp[j] * self.RU_dg[gg,j] for gg in range(self.nDG) for j in range(self.nTimeslot))
                 
-                if not self.is_reserve_cost:
+                if self.is_reserve_cost:
                     self.obj_sum_without_bid = self.obj_sum_without_bid + self.obj_dg_ramp
                     obj = obj + self.obj_dg_ramp
                     print("Obj - DG - RAMP")
@@ -641,7 +706,7 @@ class gurobi_MILP:
                 self.obj_ess_chg_ramp  = gp.quicksum(self.RU_essChg[i, j] * self.dayahead_smp[j] for i in range(self.nESS) for j in range(self.nTimeslot))
                 self.obj_ess_ramp = self.obj_ess_dis_ramp + self.obj_ess_chg_ramp 
                 
-                if not self.is_reserve_cost:
+                if self.is_reserve_cost:
                     obj = obj + self.obj_ess_ramp
                     self.obj_sum_without_bid = self.obj_sum_without_bid + self.obj_ess_ramp
                     print("Obj - ESS - RAMP")
@@ -657,7 +722,7 @@ class gurobi_MILP:
                                        + self.SD_dg[i, j] * self.dg_list[i].shut_down_cost) * self.dg_list[i].fuel_cost
                                        for i in range(self.nDG) for j in range(self.nTimeslot))
             
-            if self.is_dg_reserve:
+            if self.is_dg_reserve and self.is_reserve_cost:
                 self.dg_ramp_cost = gp.quicksum(self.dg_list[gg].b * self.RU_dg[gg,j] for gg in range(self.nDG) for j in range(self.nTimeslot))
                 
                 self.dg_obj_cost = self.dg_gen_cost + self.dg_start_shut_cost + self.dg_ramp_cost
@@ -750,12 +815,13 @@ class gurobi_MILP:
         
         #     print("add_igdt_risk_seeking_constraints sucessfully") 
         
-    def solve(self, tol, timelimit=None):
+    def solve(self, tol, timelimit=600):
         
         mip_gap = tol[0]
         feas_tol = tol[1]
         self.m.setParam(GRB.Param.MIPGap, mip_gap)
         self.m.setParam(GRB.Param.FeasibilityTol, feas_tol)
+        self.m.setParam('TimeLimit', timelimit)
         
         
         sol = self.m.optimize()
@@ -885,7 +951,6 @@ class gurobi_MILP:
                 print("gamma_obj error")
                 print("gamma_obj error")
                 
-                    
             if self.is_DRO_gamma:
                 for i in range(self.nRES):
                     for n in range(self.nScen):
@@ -988,7 +1053,7 @@ class gurobi_MILP:
         
         return P_dict, U_dict, slack_dict
     
-    def optimize(self, mip_gap, feas_tol):
+    def optimize(self, mip_gap, feas_tol, timelimit=None):
         
         self.add_Variables()
         self.add_bid_constraints()
@@ -1001,6 +1066,8 @@ class gurobi_MILP:
         
         
         if self.is_bid_DRO:
+            if self.case_dict['calc_rad'] == True:
+                self.calculate_radius()
             self.set_DRO_obj_constraints()
         if self.is_bid_DRCC:
             self.set_DRCC_Constraint()
@@ -1012,7 +1079,7 @@ class gurobi_MILP:
         
         
         time_start_op = time.time()
-        sol, obj = self.solve([mip_gap, feas_tol])
+        sol, obj = self.solve([mip_gap, feas_tol, timelimit])
         time_end_op = time.time()
         self.opt_solve_time = time_end_op - time_start_op
         print("Optimization Duration Time:", self.opt_solve_time)
@@ -1055,9 +1122,9 @@ class gurobi_MILP:
                 
                 for j in range(self.nTimeslot):
                     if self.is_reserve_cost:
-                        obj1[j] = self.dayahead_smp[j] * (PbidSol[j])
+                        obj1[j] = self.dayahead_smp[j] * (PbidSol[j] + RbidSol[j])                      
                     else:
-                        obj1[j] = self.dayahead_smp[j] * (PbidSol[j] + RbidSol[j])
+                        obj1[j] = self.dayahead_smp[j] * (PbidSol[j])
                     obj2[j] = self.theta[j] * lambda_objSol[j]
                     
                     for i in range(self.nScen):
@@ -1080,7 +1147,7 @@ class gurobi_MILP:
                     + U_dict['dg_sd'][i,j] * self.dg_list[i].shut_down_cost * self.dg_list[i].fuel_cost 
                     obj_dg_cost[i,j] = obj_dg_sum_gen_cost[i,j] + obj_dg_run_cost[i,j]
                     
-                    if self.is_dg_reserve:
+                    if self.is_dg_reserve and self.is_reserve_cost:
                         obj_dg_cost[i,j] = obj_dg_cost[i,j] + self.dg_list[i].b * self.P_dict['dg_ru'][i,j] 
         
         if self.is_igdt_risk_averse:
@@ -1107,7 +1174,7 @@ class gurobi_MILP:
         self.slack_dict = slack_dict
         
         
-        return sol, obj_dict, P_dict, U_dict, slack_dict
+        return  sol, obj_dict, P_dict, U_dict, slack_dict
     
 
     def check_drcc_constraint(self):
@@ -1163,6 +1230,7 @@ class gurobi_MILP:
         ratio = count / (self.nTimeslot * self.nScen) 
         return lhs_array, rhs_array, check_array, ratio
     
+    
     def add_smp_constraints(self):
         
         if self.is_case1 or self.is_case2 or self.is_case4:
@@ -1185,7 +1253,7 @@ class gurobi_MILP:
         self.base_obj = base_obj
         self.beta = beta        
     
-def oos_test(opt_bid, vpp, OOS_sim):
+def oos_test(opt_bid, vpp, OOS_sim,case):
     
     Pbid = opt_bid.P_dict['bid']
     Rdg_i = opt_bid.P_dict['dg_ru']
@@ -1219,8 +1287,38 @@ def oos_test(opt_bid, vpp, OOS_sim):
     check_array = np.zeros((opt_bid.nTimeslot, OOS_sim))
     count = 0
     
+    nScen = opt_bid.nScen
+    dayahead_smp = opt_bid.dayahead_smp
+
     for t in range(opt_bid.nTimeslot):
-        rhs_array[t] = 0.1*Pbid[t]
+        
+        if case == 'WDRCC':
+            s_obj = opt_bid.slack_dict['s_obj']
+            theta = opt_bid.theta
+            lambda_obj = opt_bid.slack_dict['lambda_obj']
+            Pbid_under = 0
+            for i in range(nScen):
+                Pbid_under += 1/nScen /dayahead_smp[t] * s_obj[i,t]
+            Pbid_under += theta[t] *lambda_obj[t] /dayahead_smp[t]
+            rhs_array[t] = 0.1*(Pbid[t] - Pbid_under)
+            
+        elif case == 'SAA':
+            s_obj = opt_bid.slack_dict['s_obj']            
+            Pbid_under = 0
+            for i in range(nScen):
+                Pbid_under += 1/nScen /dayahead_smp[t] * s_obj[i,t]
+            rhs_array[t] = 0.1*(Pbid[t] - Pbid_under)
+    
+        elif case == 'momentDRO':
+            theta_0 = opt_bid.slack_dict['theta_0']
+            lambda_o = opt_bid.slack_dict['lambda_o']
+            Pbid_under = (theta_0[t] + lambda_o[t]) /dayahead_smp[t]
+            rhs_array[t] = 0.1*(Pbid[t] - Pbid_under)
+        
+        else:
+            rhs_array[t] = 0.1* Pbid[t]
+        
+        
         if opt_bid.is_dg_reserve:
             rhs_array[t] += Rdg[t] #opt_bid.test_const # + Pbid[t]*0.1
         if opt_bid.is_ess_reserve:
@@ -1229,7 +1327,7 @@ def oos_test(opt_bid, vpp, OOS_sim):
         for n in range(OOS_sim):
             lhs_array[t,n] = - profile_xi[t,n]
         
-            if lhs_array[t,n] <= rhs_array[t] + 0.01:
+            if lhs_array[t,n] <= rhs_array[t]:
                 check_array[t,n] = 1
                 count = count + 1
             else:
