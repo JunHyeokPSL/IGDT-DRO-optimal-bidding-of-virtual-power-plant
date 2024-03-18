@@ -288,7 +288,7 @@ class Single_Case_Plot:
  
 
         plt.rcParams["figure.figsize"] = (8, 12)
-        ax1 = plt.subplot(211)
+        ax = plt.subplot(211)
         #plt.title('The Reserve of Generators for Uncertainty')
         
         profile_xi = np.zeros((self.nTimeslot, self.nScen))
@@ -305,34 +305,21 @@ class Single_Case_Plot:
         sum_bottom = np.zeros(self.nTimeslot)
         if self.dg_list:
             if self.is_dg_reserve:
-                ax1.bar(x_tick , sum(self.RU_dgSol), label = r'$R_{i,h}$', color =self.color_dict['DG'], alpha = 0.6)
+                ax.bar(x_tick , sum(self.RU_dgSol), label = r'$R_{i,h}$', color =self.color_dict['DG'], alpha = 0.6)
                 sum_bottom = sum_bottom + sum(self.RU_dgSol)
         
         if self.ess_list:
             if self.is_ess_reserve:
-                ax1.bar(x_tick , sum(self.RU_essDisSol), bottom = sum_bottom, label = r'$R_{s,h}^{dis}$', color = self.color_dict['ESS_dis'], alpha = 0.6)
+                ax.bar(x_tick , sum(self.RU_essDisSol), bottom = sum_bottom, label = r'$R_{s,h}^{dis}$', color = self.color_dict['ESS_dis'], alpha = 0.6)
                 sum_bottom = sum_bottom + sum(self.RU_essDisSol)
-                ax1.bar(x_tick , sum(self.RU_essChgSol), bottom = sum_bottom, label = r'$R_{s,h}^{chg}$', color = self.color_dict['ESS_chg'], alpha = 0.6)
+                ax.bar(x_tick , sum(self.RU_essChgSol), bottom = sum_bottom, label = r'$R_{s,h}^{chg}$', color = self.color_dict['ESS_chg'], alpha = 0.6)
                 sum_bottom = sum_bottom + sum(self.RU_essChgSol)
         self.plt_setting('Reserve Power [kWh]')
         
-        ax1.set_ylim([0, max([max(profile_xi_max - 0.1*self.P_bidSol),max(sum_bottom)])*1.3])
-        ax1.legend(loc='lower right', ncol=3) #, fontsize=8)
-        ax2 = ax1.twinx()
+        ax.set_ylim([0, max([max(profile_xi_max - 0.1*self.P_bidSol),max(sum_bottom)])*1.3])
+        ax.legend(loc='upper right', ncol=3) #, fontsize=8)
         
-        lhs, rhs, check_array, ratio = self.opt_bid.check_drcc_constraint()
-        reliability_array = np.zeros(self.nTimeslot)
-        for i in range(self.nTimeslot):
-            reliability_array[i] = sum(check_array[i,:])
-            
-        ax2.plot(x_tick ,reliability_array, 'bo--', label=r'$\rho$', 
-                  markersize=7, alpha = 0.8, linewidth = 1.0)
-        ax2.set_ylim([70.0,104.0])
-        ax2.yaxis.set_major_locator(ticker.MultipleLocator(base=5.0))
-        self.plt_setting('Prop. of safey conditions [%]')        
-
-        
-        plt.subplot(212)
+        ax1 = plt.subplot(212)
         
         # plt.title('The Reserve of Generators Via Uncertainty')
         
@@ -361,7 +348,7 @@ class Single_Case_Plot:
         plt.bar(x_tick, np.zeros(self.nTimeslot), color='green', alpha = 0.7, label=r'$-\hat{\xi}_h$')
 
         # Add the custom legend entry to the legend
-        plt.legend(loc='best', ncol=3)
+        plt.legend(loc='upper left', ncol=3)
 
         plt.ylim([0, np.max(profile_xi_max)*1.3])
         
@@ -369,6 +356,19 @@ class Single_Case_Plot:
         plt.ylabel('Box plot of uncertainty [kWh]')
         plt.xlim([1 -0.7, 1 + self.nTimeslot - 0.3])
         plt.xticks(np.arange(1, self.nTimeslot+1, 1 / self.UNIT_TIME)) #, fontsize=8)
+        
+        ax2 = ax1.twinx()
+        
+        lhs, rhs, check_array, ratio = self.opt_bid.check_drcc_constraint()
+        reliability_array = np.zeros(self.nTimeslot)
+        for i in range(self.nTimeslot):
+            reliability_array[i] = sum(check_array[i,:])
+            
+        ax2.plot(x_tick ,reliability_array, 'bo--', label=r'$\rho$', 
+                  markersize=7, alpha = 0.8, linewidth = 1.0)
+        ax2.set_ylim([70.0,104.0])
+        ax2.yaxis.set_major_locator(ticker.MultipleLocator(base=5.0))
+        self.plt_setting('Prop. of safey conditions [%]')        
         
         
         
